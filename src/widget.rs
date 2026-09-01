@@ -3,15 +3,21 @@
 //!
 //! # Rendering convention (easy to get wrong, so it is called out here)
 //!
-//! A pipe is drawn as **three strokes along one centerline**, not as two
-//! hand-placed parallel lines: a wide casing stroke, then a narrower stroke
-//! in the cell's own background color punched through it, then the water on
-//! top of that. What the player sees is a hollow pipe with two parallel
-//! walls, which is why straights and corners need no separate geometry.
+//! A pipe is **genuinely hollow**: its two walls are drawn as two separate
+//! lines offset from the centerline, and the space between them is never
+//! painted over. Do not go back to the tempting shortcut of one wide casing
+//! stroke with a narrower background-colored stroke punched through it: that
+//! only looks hollow when the background is opaque, and embedding apps with
+//! a translucent theme (a blurred backdrop, a live wallpaper) get a pale
+//! smear instead of a bore.
 //!
-//! The consequence to remember: the "bore" stroke must be painted in the
-//! same color as the cell behind it. Locked and unlocked columns have
-//! different backgrounds, so the bore color is per column, never a constant.
+//! The corollary that is easy to get wrong: a corner's walls are two
+//! **concentric arcs** (`radius +/- offset` around the same centre), not the
+//! centerline arc shifted sideways. Concentric arcs land exactly on
+//! `cell_center +/- offset` on both shared edges, which is where the
+//! neighbouring cell's straight walls also land, so the pipework joins up
+//! seamlessly. Any other offsetting scheme leaves visible notches at every
+//! corner.
 
 use std::f32::consts::{PI, TAU};
 
@@ -26,10 +32,10 @@ use crate::game::{FlowStep, GameStatus, Piece, PipesGame, Rotation, Side};
 /// both a light and a dark board. Override with [`PipesWidget::water_color`].
 pub const DEFAULT_WATER_COLOR: Color32 = Color32::from_rgb(0x2E, 0x9E, 0xD9);
 
-/// Outer diameter of a pipe, as a fraction of the cell size.
-const CASING_WIDTH: f32 = 0.46;
 /// Inner (water-carrying) diameter of a pipe, as a fraction of the cell size.
-const BORE_WIDTH: f32 = 0.28;
+const BORE_WIDTH: f32 = 0.30;
+/// Thickness of each of a pipe's two walls, as a fraction of the cell size.
+const WALL_THICKNESS: f32 = 0.075;
 /// Line segments used to approximate a corner's quarter arc.
 const ARC_STEPS: usize = 10;
 /// Seconds a column takes to slide into place after a scroll.
@@ -148,36 +154,87 @@ fn shared_corner(rect: Rect, a: Side, b: Side) -> Pos2 {
     Pos2::new(x, y)
 }
 
-/// The path water takes through one cell, entering by `entry`. Straights are
-/// two points; corners are a sampled quarter arc around the cell corner the
-/// two open edges share.
-fn centerline(rect: Rect, piece: Piece, entry: Side) -> Vec<Pos2> {
-    let [a, b] = piece.sides();
-    let (from, to) = if a == entry { (a, b) } else { (b, a) };
+/// The route through one cell: the line the water runs along, and the shape
+/// both walls are derived from.
+#[derive(Clone, Copy)]
+enum Path {
+    Straight {
+        from: Pos2,
+        to: Pos2,
+    },
+    Arc {
+        center: Pos2,
+        radius: f32,
+        start: f32,
+        sweep: f32,
+    },
+}
 
-    if !piece.is_corner() {
-        return vec![side_point(rect, from), side_point(rect, to)];
+impl Path {
+    /// The route through `rect`, oriented so it starts at the `entry` edge:
+    /// the water's direction of travel, which is what the fill animation
+    /// advances along.
+    fn new(rect: Rect, piece: Piece, entry: Side) -> Self {
+        let [a, b] = piece.sides();
+        let (from, to) = if a == entry { (a, b) } else { (b, a) };
+
+        if !piece.is_corner() {
+            return Self::Straight {
+                from: side_point(rect, from),
+                to: side_point(rect, to),
+            };
+        }
+
+        let center = shared_corner(rect, from, to);
+        let offset = side_point(rect, from) - center;
+        let start = offset.angle();
+        let mut sweep = (side_point(rect, to) - center).angle() - start;
+        // Always take the short way round: a corner turns 90 degrees, never 270.
+        while sweep > PI {
+            sweep -= TAU;
+        }
+        while sweep < -PI {
+            sweep += TAU;
+        }
+
+        Self::Arc {
+            center,
+            radius: offset.length(),
+            start,
+            sweep,
+        }
     }
 
-    let center = shared_corner(rect, from, to);
-    let start = side_point(rect, from) - center;
-    let radius = start.length();
-    let start_angle = start.angle();
-    let mut sweep = (side_point(rect, to) - center).angle() - start_angle;
-    // Always take the short way round: a corner turns 90 degrees, never 270.
-    while sweep > PI {
-        sweep -= TAU;
+    /// Samples the route pushed sideways by `offset`: `0.0` is the
+    /// centerline the water runs along, `+/-` a wall offset gives the two
+    /// casing walls. A corner is offset as a **concentric arc**, never as a
+    /// shifted chord; see the module docs for why that matters.
+    fn points(self, offset: f32) -> Vec<Pos2> {
+        match self {
+            Self::Straight { from, to } => {
+                let push = (to - from).normalized().rot90() * offset;
+                vec![from + push, to + push]
+            }
+            Self::Arc {
+                center,
+                radius,
+                start,
+                sweep,
+            } => {
+                // The arc's own outward normal points away from the centre,
+                // so a positive offset is "further from the corner" on one
+                // side and the sweep's sign decides which. Either way the two
+                // signs give the two walls.
+                let signed = if sweep < 0.0 { -offset } else { offset };
+                (0..=ARC_STEPS)
+                    .map(|i| {
+                        let angle = start + sweep * i as f32 / ARC_STEPS as f32;
+                        center + Vec2::angled(angle) * (radius + signed)
+                    })
+                    .collect()
+            }
+        }
     }
-    while sweep < -PI {
-        sweep += TAU;
-    }
-
-    (0..=ARC_STEPS)
-        .map(|i| {
-            let angle = start_angle + sweep * i as f32 / ARC_STEPS as f32;
-            center + Vec2::angled(angle) * radius
-        })
-        .collect()
 }
 
 /// The leading `t` (0..=1) of a polyline by arc length: the wet part of a
@@ -209,35 +266,44 @@ fn polyline_prefix(points: &[Pos2], t: f32) -> Vec<Pos2> {
     out
 }
 
-/// The three strokes a length of pipe is painted with. `bore` has to match
-/// whatever is behind the pipe, which is per column: see the module docs.
+/// How a length of pipe is painted. `wall_offset` is the distance from the
+/// centerline to each wall's own centerline, so the walls' inner edges sit
+/// exactly `bore_width / 2` out and the water meets them flush.
 #[derive(Clone, Copy)]
 struct PipeStyle {
     casing: Color32,
-    casing_width: f32,
-    bore: Color32,
+    wall_offset: f32,
+    wall_thickness: f32,
     bore_width: f32,
     water: Color32,
 }
 
-/// Casing, hollow bore, then whatever water has reached this stretch.
-fn draw_pipe(painter: &egui::Painter, points: &[Pos2], style: PipeStyle, fill: f32) {
-    if points.len() < 2 {
-        return;
+impl PipeStyle {
+    fn new(cell: f32, casing: Color32, water: Color32) -> Self {
+        let bore_width = cell * BORE_WIDTH;
+        let wall_thickness = cell * WALL_THICKNESS;
+        Self {
+            casing,
+            wall_offset: (bore_width + wall_thickness) * 0.5,
+            wall_thickness,
+            bore_width,
+            water,
+        }
     }
-    painter.add(Shape::line(
-        points.to_vec(),
-        Stroke::new(style.casing_width, style.casing),
-    ));
-    painter.add(Shape::line(
-        points.to_vec(),
-        Stroke::new(style.bore_width, style.bore),
-    ));
+}
 
-    let wet = polyline_prefix(points, fill);
-    if wet.len() >= 2 {
-        painter.add(Shape::line(wet, Stroke::new(style.bore_width, style.water)));
+/// Whatever water has reached this stretch, then the two walls over it.
+fn draw_pipe(painter: &egui::Painter, path: Path, style: PipeStyle, fill: f32) {
+    if fill > 0.0 {
+        let wet = polyline_prefix(&path.points(0.0), fill);
+        if wet.len() >= 2 {
+            painter.add(Shape::line(wet, Stroke::new(style.bore_width, style.water)));
+        }
     }
+
+    let wall = Stroke::new(style.wall_thickness, style.casing);
+    painter.add(Shape::line(path.points(style.wall_offset), wall));
+    painter.add(Shape::line(path.points(-style.wall_offset), wall));
 }
 
 /// A small padlock, drawn behind a locked column's pipes.
@@ -416,8 +482,6 @@ impl Widget for PipesWidget<'_> {
         // ── Painting ────────────────────────────────────────────────────
         let visuals = ui.visuals();
         let ppi = painter.ctx().pixels_per_point();
-        let casing_width = cell * CASING_WIDTH;
-        let bore_width = cell * BORE_WIDTH;
 
         let open_bg = visuals.extreme_bg_color;
         let locked_bg = visuals.widgets.noninteractive.bg_fill;
@@ -436,17 +500,15 @@ impl Widget for PipesWidget<'_> {
         for col in 0..columns {
             let is_locked = game.is_locked(col);
             let bg = if is_locked { locked_bg } else { open_bg };
-            let style = PipeStyle {
-                casing: if is_locked {
+            let style = PipeStyle::new(
+                cell,
+                if is_locked {
                     locked_casing
                 } else {
                     open_casing
                 },
-                casing_width,
-                bore: bg,
-                bore_width,
-                water: water_color,
-            };
+                water_color,
+            );
             let rect = column_rect(col);
 
             painter.rect_filled(rect.round_to_pixels(ppi), 0.0, bg);
@@ -498,46 +560,46 @@ impl Widget for PipesWidget<'_> {
                     Some((entry, _, amount)) => (entry, amount),
                     None => (piece.sides()[0], 0.0),
                 };
-                let points = centerline(draw_rect, piece, entry);
-                draw_pipe(&column_painter, &points, style, amount);
+                draw_pipe(
+                    &column_painter,
+                    Path::new(draw_rect, piece, entry),
+                    style,
+                    amount,
+                );
             }
         }
 
         // ── Inlet and outlet stubs ──────────────────────────────────────
-        let inlet = [
-            Pos2::new(origin.x, origin.y + (game.start_row() as f32 + 0.5) * cell),
-            side_point(cell_rect(0, game.start_row()), Side::Left),
-        ];
-        let stub_style = PipeStyle {
-            casing: open_casing,
-            casing_width,
-            bore: open_bg,
-            bore_width,
-            water: water_color,
+        let source = Pos2::new(origin.x, origin.y + (game.start_row() as f32 + 0.5) * cell);
+        let inlet = Path::Straight {
+            from: source,
+            to: side_point(cell_rect(0, game.start_row()), Side::Left),
         };
+        let stub_style = PipeStyle::new(cell, open_casing, water_color);
         // The source is always running, even when the first piece walls it
         // off: the water simply stops against that wall.
-        draw_pipe(&painter, &inlet, stub_style, 1.0);
+        draw_pipe(&painter, inlet, stub_style, 1.0);
 
-        let outlet = [
-            side_point(cell_rect(columns - 1, game.end_row()), Side::Right),
-            Pos2::new(
-                origin.x + total_size.x,
-                origin.y + (game.end_row() as f32 + 0.5) * cell,
-            ),
-        ];
+        let goal = Pos2::new(
+            origin.x + total_size.x,
+            origin.y + (game.end_row() as f32 + 0.5) * cell,
+        );
+        let outlet = Path::Straight {
+            from: side_point(cell_rect(columns - 1, game.end_row()), Side::Right),
+            to: goal,
+        };
         let outlet_fill = if game.reaches_goal() && !game.is_animating() {
             1.0
         } else {
             0.0
         };
-        draw_pipe(&painter, &outlet, stub_style, outlet_fill);
+        draw_pipe(&painter, outlet, stub_style, outlet_fill);
 
         // Source and target markers, sitting over the stubs' outer ends.
-        painter.circle_filled(inlet[0], cell * 0.2, water_color);
-        painter.circle_stroke(outlet[1], cell * 0.2, Stroke::new(cell * 0.08, water_color));
+        painter.circle_filled(source, cell * 0.2, water_color);
+        painter.circle_stroke(goal, cell * 0.2, Stroke::new(cell * 0.08, water_color));
         if outlet_fill > 0.0 {
-            painter.circle_filled(outlet[1], cell * 0.2, water_color);
+            painter.circle_filled(goal, cell * 0.2, water_color);
         }
 
         // ── Win banner ──────────────────────────────────────────────────
@@ -549,9 +611,16 @@ impl Widget for PipesWidget<'_> {
                 font,
                 visuals.widgets.noninteractive.fg_stroke.color,
             );
+            // Hugging the top edge rather than centred: the completed run of
+            // water is the reward for solving the board, and a banner in the
+            // middle of it covers exactly the part worth looking at.
+            let size = galley.size() + Vec2::new(cell, cell * 0.6);
             let banner = Rect::from_center_size(
-                response.rect.center(),
-                galley.size() + Vec2::new(cell, cell * 0.6),
+                Pos2::new(
+                    response.rect.center().x,
+                    response.rect.min.y + size.y * 0.5 + cell * 0.15,
+                ),
+                size,
             );
             painter.rect_filled(banner, CornerRadius::same(6), visuals.window_fill);
             painter.rect_stroke(
@@ -585,16 +654,16 @@ mod tests {
 
     #[test]
     fn straight_centerline_runs_the_way_the_water_travels() {
-        let points = centerline(rect(), Piece::Horizontal, Side::Left);
+        let points = Path::new(rect(), Piece::Horizontal, Side::Left).points(0.0);
         assert_eq!(points, vec![Pos2::new(0.0, 5.0), Pos2::new(10.0, 5.0)]);
 
-        let reversed = centerline(rect(), Piece::Horizontal, Side::Right);
+        let reversed = Path::new(rect(), Piece::Horizontal, Side::Right).points(0.0);
         assert_eq!(reversed, vec![Pos2::new(10.0, 5.0), Pos2::new(0.0, 5.0)]);
     }
 
     #[test]
     fn corner_centerline_arcs_between_its_two_edges() {
-        let points = centerline(rect(), Piece::LeftDown, Side::Left);
+        let points = Path::new(rect(), Piece::LeftDown, Side::Left).points(0.0);
         assert_eq!(points.len(), ARC_STEPS + 1);
         assert!(points[0].distance(Pos2::new(0.0, 5.0)) < 0.01);
         assert!(points[ARC_STEPS].distance(Pos2::new(5.0, 10.0)) < 0.01);
@@ -603,6 +672,36 @@ mod tests {
         for point in &points {
             assert!((point.distance(Pos2::new(0.0, 10.0)) - 5.0).abs() < 0.01);
         }
+    }
+
+    /// The join that breaks if a corner's walls are ever offset as a shifted
+    /// chord instead of a concentric arc: both walls have to arrive on the
+    /// shared edge at exactly the two points a straight's walls arrive at.
+    #[test]
+    fn corner_walls_meet_a_straights_walls_on_the_shared_edge() {
+        let offset = 1.5;
+        let corner = Path::new(rect(), Piece::LeftDown, Side::Left);
+        let straight = Path::new(rect(), Piece::Horizontal, Side::Left);
+
+        for side in [offset, -offset] {
+            let corner_start = *corner.points(side).first().unwrap();
+            let straight_start = *straight.points(side).first().unwrap();
+            assert!(
+                corner_start.distance(straight_start) < 0.01,
+                "corner wall enters at {corner_start:?}, straight wall at {straight_start:?}"
+            );
+        }
+
+        // The far end lands on the bottom edge, mirrored about the cell's
+        // vertical centerline.
+        let ends: Vec<Pos2> = [offset, -offset]
+            .into_iter()
+            .map(|side| *corner.points(side).last().unwrap())
+            .collect();
+        for end in &ends {
+            assert!((end.y - 10.0).abs() < 0.01, "wall does not reach the edge");
+        }
+        assert!((ends[0].x + ends[1].x - 10.0).abs() < 0.01);
     }
 
     #[test]

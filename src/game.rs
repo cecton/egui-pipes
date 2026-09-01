@@ -271,7 +271,11 @@ impl PipesGame {
     }
 
     /// How far column `col` has been scrolled down from its stored order.
-    pub(crate) fn offset(&self, col: usize) -> usize {
+    ///
+    /// Paired with [`PipesGame::solve`], whose result is a target offset per
+    /// column: the difference between the two is how far that column still
+    /// has to travel, which is what a hint needs in order to say anything.
+    pub fn offset(&self, col: usize) -> usize {
         self.offsets[col]
     }
 

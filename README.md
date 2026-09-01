@@ -83,7 +83,8 @@ To offer a hint, ask the solver where the columns need to end up:
 
 ```rust,ignore
 if let Some(offsets) = game.solve() {
-    // `offsets[col]` is the scroll position column `col` needs to reach.
+    // `offsets[col]` is where column `col` needs to end up; compare it with
+    // `game.offset(col)` to see how far it still has to travel.
 }
 ```
 
