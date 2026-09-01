@@ -1,6 +1,6 @@
 [package]
 name = "egui-pipes"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.80"
 description = "A pipe-connecting puzzle game library for egui"
@@ -24,6 +24,9 @@ fastrand = "2"
 fastrand = { version = "2", features = ["js"] }
 
 [dev-dependencies]
+# Fonts only matter to the tests, which run a real `egui` pass over the
+# widget; the library itself never needs them.
+egui = { version = "0.35", features = ["default_fonts"] }
 xtask-wasm = { version = "0.6.5", features = ["run-example", "wasm-opt"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

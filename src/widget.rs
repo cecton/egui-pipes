@@ -40,9 +40,15 @@ const WALL_THICKNESS: f32 = 0.075;
 const ARC_STEPS: usize = 10;
 /// Seconds a column takes to slide into place after a scroll.
 const SCROLL_ANIM_SECS: f32 = 0.12;
-/// Scroll delta (in points) that counts as one row of wheel movement. egui
-/// delivers roughly 50 points per wheel notch by default.
-const SCROLL_NOTCH: f32 = 45.0;
+/// Scroll travel, in points, that counts as one row on devices that report
+/// *continuous* deltas: trackpads, and browsers scrolling in pixel mode.
+///
+/// A discrete mouse wheel is deliberately not measured in points. It reports
+/// whole lines, and one notch is taken as one row, so this constant cannot
+/// drift out of step with `egui`'s `line_scroll_speed` (40 points per notch
+/// natively, 8 on web) the way a single points threshold did: at 45 points a
+/// notch worth 40 could never fire on its own.
+const SCROLL_POINTS_PER_ROW: f32 = 50.0;
 
 /// The footprint [`PipesWidget`] occupies for `game` at a given `cell_size`.
 /// One extra cell of width covers the inlet and outlet stubs, half a cell on
@@ -414,34 +420,54 @@ impl Widget for PipesWidget<'_> {
                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 }
 
-                // Wheel scrolling, accumulated so one notch is one row
-                // whatever the device's delta granularity. Consumed here so
-                // an enclosing scroll area or scene doesn't also act on it.
+                // Wheel scrolling. The raw events are read rather than
+                // egui's smoothed `smooth_scroll_delta`, because only the
+                // events say which *unit* the device reports in: a discrete
+                // wheel notch is one row whatever a notch happens to be worth
+                // in points, while a trackpad's continuous travel is measured
+                // against `SCROLL_POINTS_PER_ROW`.
                 let acc_id = response.id.with("pipes_scroll_accumulator");
-                let raw = ui.input_mut(|i| {
-                    let delta = i.smooth_scroll_delta.y;
-                    if delta != 0.0 {
-                        i.smooth_scroll_delta.y = 0.0;
+                let (rows_scrolled, still_scrolling) = ui.input_mut(|i| {
+                    // Leave ctrl+wheel to egui, which reads it as zoom.
+                    if i.modifiers.command {
+                        return (0.0, i.is_scrolling());
                     }
-                    delta
+                    let mut rows_scrolled = 0.0;
+                    i.events.retain(|event| {
+                        let egui::Event::MouseWheel { unit, delta, .. } = event else {
+                            return true;
+                        };
+                        rows_scrolled += match unit {
+                            egui::MouseWheelUnit::Line => delta.y,
+                            egui::MouseWheelUnit::Page => delta.y * rows as f32,
+                            egui::MouseWheelUnit::Point => delta.y / SCROLL_POINTS_PER_ROW,
+                        };
+                        false
+                    });
+                    // egui smooths the same input into `smooth_scroll_delta`
+                    // independently of the events, so consuming the events is
+                    // not enough on its own: zeroing this is what stops an
+                    // enclosing scroll area or scene from also acting on the
+                    // wheel.
+                    i.smooth_scroll_delta.y = 0.0;
+                    (rows_scrolled, i.is_scrolling())
                 });
-                // egui spreads one wheel notch over a few frames, so the
-                // accumulator is reset whenever the wheel goes quiet rather
-                // than carrying a residue that would eventually drift into
-                // an extra row.
-                let mut acc: f32 = if raw == 0.0 {
-                    0.0
+                // Partial travel is carried between frames while the gesture
+                // is still live, then dropped once the device goes quiet, so
+                // a leftover fraction can never surface as a stray row later.
+                let mut acc: f32 = if still_scrolling {
+                    ui.ctx().data(|d| d.get_temp(acc_id)).unwrap_or(0.0) + rows_scrolled
                 } else {
-                    ui.ctx().data(|d| d.get_temp(acc_id)).unwrap_or(0.0) + raw
+                    rows_scrolled
                 };
-                while acc.abs() >= SCROLL_NOTCH {
+                while acc.abs() >= 1.0 {
                     // Wheel up moves the column up: the pieces follow the
                     // wheel rather than the usual "content scrolls the other
                     // way" convention, since the player is turning a reel.
                     let (direction, step) = if acc > 0.0 {
-                        (Rotation::Up, -SCROLL_NOTCH)
+                        (Rotation::Up, -1.0)
                     } else {
-                        (Rotation::Down, SCROLL_NOTCH)
+                        (Rotation::Down, 1.0)
                     };
                     acc += step;
                     if game.rotate(col, direction) {
@@ -719,5 +745,118 @@ mod tests {
         let game = PipesGame::random(6, 5, 0.5, 1);
         assert_eq!(content_size(&game, 10.0), Vec2::new(70.0, 50.0));
         assert_eq!(fit_cell_size(&game, Vec2::new(70.0, 50.0)), 10.0);
+    }
+
+    const TEST_CELL: f32 = 20.0;
+
+    /// Runs the widget in a real `egui` pass so the wheel path is exercised
+    /// end to end. Nothing short of this catches a unit mismatch: the widget
+    /// only sees which unit a device reports in from the raw events, and the
+    /// bug this guards against was a points threshold (45) that one native
+    /// wheel notch (40 points) could never reach on its own.
+    struct WheelHarness {
+        ctx: egui::Context,
+        game: PipesGame,
+        pointer: Pos2,
+    }
+
+    impl WheelHarness {
+        fn new(game: PipesGame, col: usize) -> Self {
+            let mut harness = Self {
+                ctx: egui::Context::default(),
+                game,
+                pointer: Pos2::ZERO,
+            };
+            // The first pass places the board; the second lets the pointer
+            // register as hovering it.
+            let rect = harness.pass(Vec::new());
+            harness.pointer = Pos2::new(
+                rect.min.x + TEST_CELL * (col as f32 + 1.0),
+                rect.min.y + TEST_CELL,
+            );
+            let pointer = harness.pointer;
+            harness.pass(vec![egui::Event::PointerMoved(pointer)]);
+            harness
+        }
+
+        fn pass(&mut self, events: Vec<egui::Event>) -> Rect {
+            let widget_rect = std::cell::Cell::new(Rect::ZERO);
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let game = &mut self.game;
+            let _ = self.ctx.run_ui(input, |ui| {
+                let response = ui.add(PipesWidget::new(game).cell_size(TEST_CELL));
+                widget_rect.set(response.rect);
+            });
+            widget_rect.get()
+        }
+
+        fn wheel(&mut self, unit: egui::MouseWheelUnit, delta_y: f32) {
+            let pointer = self.pointer;
+            self.pass(vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::MouseWheel {
+                    unit,
+                    delta: Vec2::new(0.0, delta_y),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Default::default(),
+                },
+            ]);
+        }
+    }
+
+    /// One notch of a discrete wheel is one row, whatever a notch is worth in
+    /// points on the platform.
+    #[test]
+    fn one_wheel_notch_scrolls_exactly_one_row() {
+        let game = PipesGame::random(6, 5, 0.0, 11);
+        let rows = game.rows();
+        let before = game.offset(0);
+        let mut harness = WheelHarness::new(game, 0);
+
+        harness.wheel(egui::MouseWheelUnit::Line, -1.0);
+        assert_eq!(harness.game.offset(0), (before + 1) % rows);
+        assert_eq!(harness.game.moves(), 1);
+
+        harness.wheel(egui::MouseWheelUnit::Line, 1.0);
+        assert_eq!(harness.game.offset(0), before);
+        assert_eq!(harness.game.moves(), 2);
+    }
+
+    /// Continuous devices are measured in points instead, and partial travel
+    /// does not move the column.
+    #[test]
+    fn continuous_scrolling_needs_a_full_rows_worth_of_travel() {
+        let game = PipesGame::random(6, 5, 0.0, 11);
+        let rows = game.rows();
+        let before = game.offset(0);
+        let mut harness = WheelHarness::new(game, 0);
+
+        harness.wheel(egui::MouseWheelUnit::Point, -SCROLL_POINTS_PER_ROW * 0.5);
+        assert_eq!(harness.game.offset(0), before, "half a row should not move");
+
+        harness.wheel(egui::MouseWheelUnit::Point, -SCROLL_POINTS_PER_ROW * 0.5);
+        assert_eq!(
+            harness.game.offset(0),
+            (before + 1) % rows,
+            "the two halves should add up to one row"
+        );
+    }
+
+    #[test]
+    fn the_wheel_does_not_move_a_locked_column() {
+        let game = PipesGame::random(6, 5, 0.6, 11);
+        let col = (0..game.columns())
+            .find(|col| game.is_locked(*col))
+            .expect("a 60% locked board has locked columns");
+        let before = game.offset(col);
+        let mut harness = WheelHarness::new(game, col);
+
+        harness.wheel(egui::MouseWheelUnit::Line, -1.0);
+        assert_eq!(harness.game.offset(col), before);
+        assert_eq!(harness.game.moves(), 0);
     }
 }

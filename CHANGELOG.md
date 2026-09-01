@@ -7,6 +7,13 @@ Versioning](semver).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-01
+
+### Fixed
+
+- A single mouse wheel notch no longer gets ignored. Wheel travel was measured against a fixed threshold in points, but a notch is worth a platform-dependent number of points (40 natively, 8 per line on web, times whatever the device reports), so one native notch fell short of the threshold and only a fast burst of notches scrolled a column. Wheel input is now read from the raw events, which carry the unit: one notch of a discrete wheel is one row, and only continuous devices (trackpads, browsers scrolling in pixel mode) are measured in points
+- Partial trackpad travel is no longer thrown away on frames without a scroll event, so slow continuous scrolling adds up to a row instead of stalling
+
 ## [0.1.0] - 2026-09-01
 
 ### Added
@@ -21,5 +28,6 @@ Versioning](semver).
 
 [keep_a_changelog]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
-[Unreleased]: https://github.com/cecton/egui-pipes/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/cecton/egui-pipes/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/cecton/egui-pipes/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cecton/egui-pipes/releases/tag/v0.1.0
