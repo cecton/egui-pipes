@@ -1,0 +1,41 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable + wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      - run: cargo run --example webapp -- dist --release
+      - name: Inject wasm hash into sw.js
+        run: |
+          HASH=$(sha256sum target/release/dist/app_bg.wasm | cut -c1-16)
+          sed -i "s|__CACHE_VERSION__|$HASH|" target/release/dist/sw.js
+          grep -q '__CACHE_VERSION__' target/release/dist/sw.js && { echo "ERROR: __CACHE_VERSION__ placeholder was not replaced in sw.js"; exit 1; } || true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/release/dist
+      - uses: actions/deploy-pages@v4
+        id: deployment

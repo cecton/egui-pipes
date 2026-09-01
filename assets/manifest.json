@@ -1,0 +1,24 @@
+{
+  "name": "egui-pipes",
+  "short_name": "Pipes",
+  "description": "Pipe-connecting puzzle game for egui",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#0E2430",
+  "background_color": "#0E2430",
+  "icons": [
+    {
+      "src": "./icons/512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    }
+  ]
+}

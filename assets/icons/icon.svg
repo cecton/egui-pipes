@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">egui-pipes icon</title>
+  <desc id="desc">A hollow double-walled pipe run crossing a tile from left to right, partly filled with water, stepping down and back up around one corner pair.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#173B4D"/>
+      <stop offset="100%" stop-color="#0E2430"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F6F7F9"/>
+      <stop offset="100%" stop-color="#D7DEE8"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#bg)"/>
+  <rect x="96" y="102" width="336" height="336" rx="54" fill="#000000" opacity="0.22"/>
+  <rect x="88" y="88" width="336" height="336" rx="54" fill="url(#tile)"/>
+
+  <!-- Column separators: scrolling one of these is the puzzle's only move. -->
+  <g stroke="#B9C2D0" stroke-width="3">
+    <line x1="200" y1="88" x2="200" y2="424"/>
+    <line x1="312" y1="88" x2="312" y2="424"/>
+  </g>
+
+  <!--
+    One pipe run, painted the way the widget paints it: a wide casing
+    stroke, then a narrower stroke in the tile's own color punched through
+    it to hollow it out, then the water inside that. The two visible casing
+    edges are what makes a pipe read as a pipe rather than as a line. The
+    water covers only part of the run, the way it does mid-puzzle.
+  -->
+  <g fill="none" stroke-linejoin="round" stroke-linecap="butt">
+    <polyline points="60,200 200,200 200,312 312,312 312,200 452,200" stroke="#5C6B78" stroke-width="52"/>
+    <polyline points="60,200 200,200 200,312 312,312 312,200 452,200" stroke="#EDF1F6" stroke-width="30"/>
+    <polyline points="60,200 200,200 200,312 312,312" stroke="#2E9ED9" stroke-width="30"/>
+  </g>
+
+  <!-- Inlet source and outlet target markers. -->
+  <circle cx="60" cy="200" r="30" fill="#2E9ED9"/>
+  <circle cx="452" cy="200" r="26" fill="none" stroke="#2E9ED9" stroke-width="12"/>
+</svg>
