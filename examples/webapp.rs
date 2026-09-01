@@ -29,14 +29,16 @@ fn run() {
             }
         }
 
-        /// `(columns, rows, locked ratio)`. Difficulty comes from both axes:
-        /// more columns means a longer chain to line up, and more rows means
-        /// more scroll positions to consider per column.
+        /// `(columns, rows, locked ratio)`. Difficulty comes from all three:
+        /// more columns means a longer chain to line up, more rows means more
+        /// scroll positions to consider per column, and *fewer* locked columns
+        /// means more of them move, which is what really multiplies the search.
+        /// 0.4 leaves 4, 4 and 5 columns scrollable respectively.
         fn dims(self) -> (usize, usize, f32) {
             match self {
-                Self::Beginner => (6, 5, 0.5),
-                Self::Intermediate => (7, 6, 0.6),
-                Self::Expert => (9, 7, 0.6),
+                Self::Beginner => (6, 5, 0.4),
+                Self::Intermediate => (7, 6, 0.4),
+                Self::Expert => (9, 7, 0.4),
             }
         }
     }
