@@ -7,6 +7,10 @@ Versioning](semver).
 
 ## [Unreleased]
 
+### Removed
+
+- The web demo's drag-to-pan (and pinch/ctrl-wheel zoom) view on narrow viewports and touch devices, inherited from the egui-minesweeper template where big boards need it. Pipes boards always fit the viewport, so the board is now laid out directly and centered instead of living in an `egui::Scene`
+
 ## [0.1.1] - 2026-09-01
 
 ### Fixed

@@ -5,7 +5,7 @@
 #[xtask_wasm::run_example(assets_dir = "assets")]
 fn run() {
     use eframe::egui;
-    use egui_pipes::{content_size, fit_cell_size, GameStatus, PipesGame, PipesWidget};
+    use egui_pipes::{GameStatus, PipesGame, PipesWidget};
     use serde::{Deserialize, Serialize};
     use xtask_wasm::wasm_bindgen::JsCast as _;
 
@@ -47,8 +47,6 @@ fn run() {
         game: PipesGame,
         selected_preset: Preset,
         seed_counter: u64,
-        scene_rect: Option<egui::Rect>,
-        mobile_cell_size: Option<f32>,
         show_menu: bool,
         touch_device: bool,
     }
@@ -66,7 +64,7 @@ fn run() {
                 self.mobile_ui(ui);
                 self.show_menu_modal(ui.ctx());
             } else {
-                self.desktop_ui(ui);
+                self.board_ui(ui);
                 self.show_menu = false;
             }
         }
@@ -77,8 +75,6 @@ fn run() {
     }
 
     impl PipesApp {
-        const MOBILE_MIN_CELL_SIZE: f32 = 34.0;
-
         fn new(cc: &eframe::CreationContext<'_>) -> Self {
             let selected_preset = cc
                 .storage
@@ -96,8 +92,6 @@ fn run() {
                 game: PipesGame::random(columns, rows, locked, initial_seed),
                 selected_preset,
                 seed_counter: initial_seed,
-                scene_rect: None,
-                mobile_cell_size: None,
                 show_menu: false,
                 touch_device,
             }
@@ -108,7 +102,6 @@ fn run() {
             let (columns, rows, locked) = preset.dims();
             self.seed_counter += 1;
             self.game = PipesGame::random(columns, rows, locked, self.seed_counter);
-            self.scene_rect = None;
         }
 
         fn start_new_game(&mut self) {
@@ -116,7 +109,7 @@ fn run() {
         }
 
         /// Narrow viewport or a coarse (touch) pointer: switches to the
-        /// panning, menu-driven mobile layout. Pointer coarseness is queried
+        /// menu-driven mobile layout. Pointer coarseness is queried
         /// once at startup and cached, since it can't realistically change
         /// mid-session.
         fn is_mobile(&self, ui: &egui::Ui) -> bool {
@@ -158,7 +151,7 @@ fn run() {
                 });
         }
 
-        fn desktop_ui(&mut self, ui: &mut egui::Ui) {
+        fn board_ui(&mut self, ui: &mut egui::Ui) {
             ui.vertical_centered(|ui| {
                 ui.add_space(8.0);
                 ui.label(
@@ -170,37 +163,10 @@ fn run() {
             });
         }
 
-        /// Fit the board to the viewport, floored at a tap-friendly size.
-        /// Deliberately uncapped on the high end: `Scene` rescales whatever
-        /// footprint it is given to fill its rect, so handing it a smaller
-        /// cell size doesn't make a smaller board, it makes the same board
-        /// stretched back up and blurred.
-        fn mobile_cell_size(&mut self, available: egui::Vec2) -> f32 {
-            let fitted = fit_cell_size(&self.game, available).max(Self::MOBILE_MIN_CELL_SIZE);
-            if self.mobile_cell_size != Some(fitted) {
-                self.mobile_cell_size = Some(fitted);
-                self.scene_rect = None;
-            }
-            fitted
-        }
-
         fn mobile_ui(&mut self, ui: &mut egui::Ui) {
             ui.spacing_mut().interact_size.y = 48.0;
             self.show_action_bar(ui);
-
-            let cell_size = self.mobile_cell_size(ui.available_size());
-            let footprint = content_size(&self.game, cell_size);
-            let mut scene_rect = self
-                .scene_rect
-                .unwrap_or_else(|| egui::Rect::from_min_size(egui::Pos2::ZERO, footprint));
-
-            egui::Scene::new()
-                .zoom_range(egui::Rangef::new(0.25, 4.0))
-                .max_inner_size(footprint)
-                .show(ui, &mut scene_rect, |ui| {
-                    ui.add(PipesWidget::new(&mut self.game).cell_size(cell_size));
-                });
-            self.scene_rect = Some(scene_rect);
+            self.board_ui(ui);
         }
 
         fn show_action_bar(&mut self, ui: &mut egui::Ui) {
