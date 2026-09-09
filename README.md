@@ -29,7 +29,7 @@ first dead end. Connecting the last stretch is what carries it to the outlet.
 - Procedural, seeded generation (`PipesGame::random`) that always produces a solvable board and verifies, per board, that **exactly one** combination of column scrolls solves it
 - An exact counting solver (`PipesGame::solution_count`, `PipesGame::solve`), fast enough to run on every generated candidate
 - No dangling corners, by construction: every column is a cyclic partition into runs that take flow in on the left and out on the right, so scrolling can never produce an illegal board
-- Click a column to scroll it down, or use the mouse wheel to scroll it either way
+- Click a column to scroll it down, drag it up or down to follow the pointer one row per cell, or use the mouse wheel to scroll it either way
 - No losing state and no timer: every scroll is undone by scrolling back
 - Locked columns are drawn darker, outlined, and marked with a padlock
 

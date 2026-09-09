@@ -7,6 +7,10 @@ Versioning](semver).
 
 ## [Unreleased]
 
+### Added
+
+- Drag-and-drop column scrolling: press an unlocked column and drag up or down; the column follows the pointer and commits one scroll per cell of travel, and any leftover fraction snaps home on release. Clicking and mouse-wheel scrolling behave exactly as before, and locked columns ignore drags. `PipesWidget::dragged` reports a drag-committed scroll to the embedding app, mirroring `PipesWidget::scrolled`
+
 ### Removed
 
 - The web demo's drag-to-pan (and pinch/ctrl-wheel zoom) view on narrow viewports and touch devices, inherited from the egui-minesweeper template where big boards need it. Pipes boards always fit the viewport, so the board is now laid out directly and centered instead of living in an `egui::Scene`

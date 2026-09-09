@@ -69,9 +69,10 @@ pub fn fit_cell_size(game: &PipesGame, available: Vec2) -> f32 {
 /// An egui widget that renders an interactive pipe board.
 ///
 /// Click an unlocked column to scroll it down one row (the bottom piece
-/// wraps around to the top); the mouse wheel over a column scrolls it either
-/// way. Individual pieces never rotate. Locked columns are drawn darker and
-/// ignore both.
+/// wraps around to the top); drag a column up or down and it follows the
+/// pointer, committing one scroll per cell of travel; the mouse wheel over
+/// a column scrolls it either way. Individual pieces never rotate. Locked
+/// columns are drawn darker and ignore all of these.
 ///
 /// ```ignore
 /// ui.add(egui_pipes::PipesWidget::new(&mut game));
@@ -83,6 +84,7 @@ pub struct PipesWidget<'a> {
     win_message: Option<String>,
     interactive: bool,
     scrolled: Option<&'a mut bool>,
+    dragged: Option<&'a mut bool>,
 }
 
 impl<'a> PipesWidget<'a> {
@@ -94,6 +96,7 @@ impl<'a> PipesWidget<'a> {
             win_message: None,
             interactive: true,
             scrolled: None,
+            dragged: None,
         }
     }
 
@@ -129,6 +132,15 @@ impl<'a> PipesWidget<'a> {
     /// the player found the wheel control, which is otherwise invisible.
     pub fn scrolled(mut self, flag: &'a mut bool) -> Self {
         self.scrolled = Some(flag);
+        self
+    }
+
+    /// Set to `true` when this frame's input scrolled a column by dragging
+    /// it with the pointer rather than clicking or using the wheel. Lets an
+    /// embedding app notice that the player found the drag control, which is
+    /// otherwise invisible.
+    pub fn dragged(mut self, flag: &'a mut bool) -> Self {
+        self.dragged = Some(flag);
         self
     }
 }
@@ -343,6 +355,7 @@ impl Widget for PipesWidget<'_> {
             win_message,
             interactive,
             mut scrolled,
+            mut dragged,
         } = self;
 
         let columns = game.columns();
@@ -351,7 +364,7 @@ impl Widget for PipesWidget<'_> {
         let total_size = content_size(game, cell);
 
         let sense = if interactive {
-            Sense::click()
+            Sense::click_and_drag()
         } else {
             Sense::hover()
         };
@@ -403,6 +416,12 @@ impl Widget for PipesWidget<'_> {
 
         // ── Input ───────────────────────────────────────────────────────
         let hovered = response.hover_pos().and_then(col_at);
+        // Which column is being dragged, and how far (in rows) the pointer
+        // has travelled past the last committed scroll. Lives in temp memory
+        // so `PipesGame` stays free of presentation state; only one column
+        // can drag at a time because there is only one pointer.
+        let drag_id = response.id.with("pipes_drag");
+        let mut drag: Option<(usize, f32)> = ui.ctx().data(|d| d.get_temp(drag_id)).flatten();
         if interactive {
             if response.clicked() {
                 if let Some(col) = response.interact_pointer_pos().and_then(col_at) {
@@ -413,79 +432,129 @@ impl Widget for PipesWidget<'_> {
                 }
             }
 
-            if let Some(col) = hovered {
-                if game.is_locked(col) {
-                    ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
-                } else {
-                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                }
+            if response.drag_started() {
+                // The drag locks to the column it started on: horizontal
+                // pointer travel is ignored, and the gesture keeps working
+                // even if the pointer leaves the board.
+                drag = response
+                    .interact_pointer_pos()
+                    .and_then(col_at)
+                    .map(|col| (col, 0.0));
+            }
 
-                // Wheel scrolling. The raw events are read rather than
-                // egui's smoothed `smooth_scroll_delta`, because only the
-                // events say which *unit* the device reports in: a discrete
-                // wheel notch is one row whatever a notch happens to be worth
-                // in points, while a trackpad's continuous travel is measured
-                // against `SCROLL_POINTS_PER_ROW`.
-                let acc_id = response.id.with("pipes_scroll_accumulator");
-                let (rows_scrolled, still_scrolling) = ui.input_mut(|i| {
-                    // Leave ctrl+wheel to egui, which reads it as zoom.
-                    if i.modifiers.command {
-                        return (0.0, i.is_scrolling());
-                    }
-                    let mut rows_scrolled = 0.0;
-                    i.events.retain(|event| {
-                        let egui::Event::MouseWheel { unit, delta, .. } = event else {
-                            return true;
-                        };
-                        rows_scrolled += match unit {
-                            egui::MouseWheelUnit::Line => delta.y,
-                            egui::MouseWheelUnit::Page => delta.y * rows as f32,
-                            egui::MouseWheelUnit::Point => delta.y / SCROLL_POINTS_PER_ROW,
-                        };
-                        false
-                    });
-                    // egui smooths the same input into `smooth_scroll_delta`
-                    // independently of the events, so consuming the events is
-                    // not enough on its own: zeroing this is what stops an
-                    // enclosing scroll area or scene from also acting on the
-                    // wheel.
-                    i.smooth_scroll_delta.y = 0.0;
-                    (rows_scrolled, i.is_scrolling())
-                });
-                // Partial travel is carried between frames while the gesture
-                // is still live, then dropped once the device goes quiet, so
-                // a leftover fraction can never surface as a stray row later.
-                let mut acc: f32 = if still_scrolling {
-                    ui.ctx().data(|d| d.get_temp(acc_id)).unwrap_or(0.0) + rows_scrolled
-                } else {
-                    rows_scrolled
-                };
-                while acc.abs() >= 1.0 {
-                    // Wheel up moves the column up: the pieces follow the
-                    // wheel rather than the usual "content scrolls the other
-                    // way" convention, since the player is turning a reel.
-                    let (direction, step) = if acc > 0.0 {
-                        (Rotation::Up, -1.0)
+            if let Some((col, residual)) = drag.as_mut() {
+                if response.dragged() {
+                    // Pieces follow the pointer: dragging down scrolls down,
+                    // the same reel convention the wheel uses. Every full
+                    // cell of travel commits one scroll; a failed rotate
+                    // (locked column, won board) pins the fraction at zero
+                    // so the drawing never detaches from the game state.
+                    *residual += response.drag_delta().y / cell;
+                    let (direction, step) = if *residual > 0.0 {
+                        (Rotation::Down, -1.0)
                     } else {
-                        (Rotation::Down, 1.0)
+                        (Rotation::Up, 1.0)
                     };
-                    acc += step;
-                    if game.rotate(col, direction) {
-                        slide[col] = if direction == Rotation::Down {
-                            -1.0
+                    while residual.abs() >= 1.0 {
+                        if game.rotate(*col, direction) {
+                            *residual += step;
+                            if let Some(flag) = dragged.as_deref_mut() {
+                                *flag = true;
+                            }
                         } else {
-                            1.0
-                        };
-                        if let Some(flag) = scrolled.as_deref_mut() {
-                            *flag = true;
+                            *residual = 0.0;
+                            break;
                         }
                     }
                 }
-                ui.ctx().data_mut(|d| d.insert_temp(acc_id, acc));
+                if response.drag_stopped() {
+                    // Hand the leftover fraction to the slide animation,
+                    // which decays it to zero: the column snaps home.
+                    slide[*col] += *residual;
+                    drag = None;
+                }
+            }
+
+            if let Some(col) = hovered {
+                if game.is_locked(col) {
+                    ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
+                } else if response.is_pointer_button_down_on() {
+                    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                } else {
+                    ui.ctx().set_cursor_icon(CursorIcon::Grab);
+                }
+
+                if !response.is_pointer_button_down_on() {
+                    // Wheel scrolling. The raw events are read rather than
+                    // egui's smoothed `smooth_scroll_delta`, because only the
+                    // events say which *unit* the device reports in: a discrete
+                    // wheel notch is one row whatever a notch happens to be worth
+                    // in points, while a trackpad's continuous travel is measured
+                    // against `SCROLL_POINTS_PER_ROW`.
+                    let acc_id = response.id.with("pipes_scroll_accumulator");
+                    let (rows_scrolled, still_scrolling) = ui.input_mut(|i| {
+                        // Leave ctrl+wheel to egui, which reads it as zoom.
+                        if i.modifiers.command {
+                            return (0.0, i.is_scrolling());
+                        }
+                        let mut rows_scrolled = 0.0;
+                        i.events.retain(|event| {
+                            let egui::Event::MouseWheel { unit, delta, .. } = event else {
+                                return true;
+                            };
+                            rows_scrolled += match unit {
+                                egui::MouseWheelUnit::Line => delta.y,
+                                egui::MouseWheelUnit::Page => delta.y * rows as f32,
+                                egui::MouseWheelUnit::Point => delta.y / SCROLL_POINTS_PER_ROW,
+                            };
+                            false
+                        });
+                        // egui smooths the same input into `smooth_scroll_delta`
+                        // independently of the events, so consuming the events is
+                        // not enough on its own: zeroing this is what stops an
+                        // enclosing scroll area or scene from also acting on the
+                        // wheel.
+                        i.smooth_scroll_delta.y = 0.0;
+                        (rows_scrolled, i.is_scrolling())
+                    });
+                    // Partial travel is carried between frames while the gesture
+                    // is still live, then dropped once the device goes quiet, so
+                    // a leftover fraction can never surface as a stray row later.
+                    let mut acc: f32 = if still_scrolling {
+                        ui.ctx().data(|d| d.get_temp(acc_id)).unwrap_or(0.0) + rows_scrolled
+                    } else {
+                        rows_scrolled
+                    };
+                    while acc.abs() >= 1.0 {
+                        // Wheel up moves the column up: the pieces follow the
+                        // wheel rather than the usual "content scrolls the other
+                        // way" convention, since the player is turning a reel.
+                        let (direction, step) = if acc > 0.0 {
+                            (Rotation::Up, -1.0)
+                        } else {
+                            (Rotation::Down, 1.0)
+                        };
+                        acc += step;
+                        if game.rotate(col, direction) {
+                            slide[col] = if direction == Rotation::Down {
+                                -1.0
+                            } else {
+                                1.0
+                            };
+                            if let Some(flag) = scrolled.as_deref_mut() {
+                                *flag = true;
+                            }
+                        }
+                    }
+                    ui.ctx().data_mut(|d| d.insert_temp(acc_id, acc));
+                }
             }
         }
 
-        ui.ctx().data_mut(|d| d.insert_temp(anim_id, slide.clone()));
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(anim_id, slide.clone());
+            d.insert_temp(drag_id, drag);
+        });
 
         // ── Water lookup ────────────────────────────────────────────────
         // How full each visited cell is, and which way the water runs
@@ -565,8 +634,15 @@ impl Widget for PipesWidget<'_> {
             }
 
             // Pipes, clipped to the column so a mid-scroll slide can show
-            // the wrapping piece coming in from the edge.
-            let shift = Vec2::new(0.0, slide[col] * cell);
+            // the wrapping piece coming in from the edge. A live drag adds
+            // its own fractional shift on top, so the column tracks the
+            // pointer between committed rows.
+            let drag_residual = drag
+                .as_ref()
+                .filter(|(c, _)| *c == col)
+                .map(|(_, residual)| *residual)
+                .unwrap_or(0.0);
+            let shift = Vec2::new(0.0, (slide[col] + drag_residual) * cell);
             let column_painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
             for row in -1..=(rows as isize) {
                 let wrapped = row.rem_euclid(rows as isize) as usize;
@@ -749,23 +825,26 @@ mod tests {
 
     const TEST_CELL: f32 = 20.0;
 
-    /// Runs the widget in a real `egui` pass so the wheel path is exercised
-    /// end to end. Nothing short of this catches a unit mismatch: the widget
-    /// only sees which unit a device reports in from the raw events, and the
-    /// bug this guards against was a points threshold (45) that one native
-    /// wheel notch (40 points) could never reach on its own.
-    struct WheelHarness {
+    /// Runs the widget in a real `egui` pass so the wheel, drag and click
+    /// paths are exercised end to end. Nothing short of this catches a unit
+    /// mismatch: the widget only sees which unit a device reports in from
+    /// the raw events, and the bug this guards against was a points
+    /// threshold (45) that one native wheel notch (40 points) could never
+    /// reach on its own.
+    struct Harness {
         ctx: egui::Context,
         game: PipesGame,
         pointer: Pos2,
+        dragged: bool,
     }
 
-    impl WheelHarness {
+    impl Harness {
         fn new(game: PipesGame, col: usize) -> Self {
             let mut harness = Self {
                 ctx: egui::Context::default(),
                 game,
                 pointer: Pos2::ZERO,
+                dragged: false,
             };
             // The first pass places the board; the second lets the pointer
             // register as hovering it.
@@ -787,8 +866,9 @@ mod tests {
                 ..Default::default()
             };
             let game = &mut self.game;
+            let dragged = &mut self.dragged;
             let _ = self.ctx.run_ui(input, |ui| {
-                let response = ui.add(PipesWidget::new(game).cell_size(TEST_CELL));
+                let response = ui.add(PipesWidget::new(game).cell_size(TEST_CELL).dragged(dragged));
                 widget_rect.set(response.rect);
             });
             widget_rect.get()
@@ -806,6 +886,37 @@ mod tests {
                 },
             ]);
         }
+
+        /// Presses the primary button at the current pointer position.
+        fn press(&mut self) {
+            let pointer = self.pointer;
+            self.pass(vec![egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                pos: pointer,
+                modifiers: Default::default(),
+            }]);
+        }
+
+        /// Moves the pointer vertically by `dy` points while the button is
+        /// held. Travel beyond egui's 6-point click radius turns the gesture
+        /// into a drag; anything below it would still count as a click.
+        fn drag_by(&mut self, dy: f32) {
+            self.pointer = Pos2::new(self.pointer.x, self.pointer.y + dy);
+            let pointer = self.pointer;
+            self.pass(vec![egui::Event::PointerMoved(pointer)]);
+        }
+
+        /// Releases the primary button at the current pointer position.
+        fn release(&mut self) {
+            let pointer = self.pointer;
+            self.pass(vec![egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                pos: pointer,
+                modifiers: Default::default(),
+            }]);
+        }
     }
 
     /// One notch of a discrete wheel is one row, whatever a notch is worth in
@@ -815,7 +926,7 @@ mod tests {
         let game = PipesGame::random(6, 5, 0.0, 11);
         let rows = game.rows();
         let before = game.offset(0);
-        let mut harness = WheelHarness::new(game, 0);
+        let mut harness = Harness::new(game, 0);
 
         harness.wheel(egui::MouseWheelUnit::Line, -1.0);
         assert_eq!(harness.game.offset(0), (before + 1) % rows);
@@ -833,7 +944,7 @@ mod tests {
         let game = PipesGame::random(6, 5, 0.0, 11);
         let rows = game.rows();
         let before = game.offset(0);
-        let mut harness = WheelHarness::new(game, 0);
+        let mut harness = Harness::new(game, 0);
 
         harness.wheel(egui::MouseWheelUnit::Point, -SCROLL_POINTS_PER_ROW * 0.5);
         assert_eq!(harness.game.offset(0), before, "half a row should not move");
@@ -853,10 +964,128 @@ mod tests {
             .find(|col| game.is_locked(*col))
             .expect("a 60% locked board has locked columns");
         let before = game.offset(col);
-        let mut harness = WheelHarness::new(game, col);
+        let mut harness = Harness::new(game, col);
 
         harness.wheel(egui::MouseWheelUnit::Line, -1.0);
         assert_eq!(harness.game.offset(col), before);
         assert_eq!(harness.game.moves(), 0);
+    }
+
+    /// Dragging a column by one cell turns a full cell of travel into one
+    /// scroll; the release must not also register as a click, or the move
+    /// count would come out as 2.
+    #[test]
+    fn one_cell_drag_down_scrolls_one_row_down() {
+        let game = PipesGame::random(6, 5, 0.0, 11);
+        let rows = game.rows();
+        let before = game.offset(0);
+        let mut harness = Harness::new(game, 0);
+
+        harness.press();
+        harness.drag_by(TEST_CELL);
+        harness.release();
+        assert_eq!(harness.game.offset(0), (before + 1) % rows);
+        assert_eq!(harness.game.moves(), 1);
+        assert!(harness.dragged);
+    }
+
+    #[test]
+    fn one_cell_drag_up_scrolls_one_row_up() {
+        let game = PipesGame::random(6, 5, 0.0, 11);
+        let rows = game.rows();
+        let before = game.offset(0);
+        let mut harness = Harness::new(game, 0);
+
+        harness.press();
+        harness.drag_by(-TEST_CELL);
+        harness.release();
+        assert_eq!(harness.game.offset(0), (before + rows - 1) % rows);
+        assert_eq!(harness.game.moves(), 1);
+        assert!(harness.dragged);
+    }
+
+    /// Travel below one cell moves nothing, and the leftover fraction is
+    /// dropped on release rather than committed later.
+    #[test]
+    fn half_cell_drag_commits_nothing() {
+        let game = PipesGame::random(6, 5, 0.0, 11);
+        let before = game.offset(0);
+        let mut harness = Harness::new(game, 0);
+
+        harness.press();
+        harness.drag_by(TEST_CELL * 0.5);
+        assert_eq!(harness.game.offset(0), before);
+        assert_eq!(harness.game.moves(), 0);
+
+        harness.release();
+        assert_eq!(harness.game.offset(0), before);
+        assert_eq!(harness.game.moves(), 0);
+        assert!(!harness.dragged);
+    }
+
+    /// Partial travel accumulates across frames while the drag is live, so
+    /// two slow halves add up to one row the way a trackpad gesture does.
+    #[test]
+    fn two_half_drags_commit_one_row() {
+        let game = PipesGame::random(6, 5, 0.0, 11);
+        let rows = game.rows();
+        let before = game.offset(0);
+        let mut harness = Harness::new(game, 0);
+
+        harness.press();
+        harness.drag_by(TEST_CELL * 0.5);
+        harness.drag_by(TEST_CELL * 0.5);
+        harness.release();
+        assert_eq!(harness.game.offset(0), (before + 1) % rows);
+        assert_eq!(harness.game.moves(), 1);
+    }
+
+    /// A fast gesture that crosses two cell boundaries in one frame commits
+    /// both rows.
+    #[test]
+    fn fast_drag_scrolls_two_rows() {
+        let game = PipesGame::random(6, 5, 0.0, 11);
+        let rows = game.rows();
+        let before = game.offset(0);
+        let mut harness = Harness::new(game, 0);
+
+        harness.press();
+        harness.drag_by(TEST_CELL * 2.0);
+        harness.release();
+        assert_eq!(harness.game.offset(0), (before + 2) % rows);
+        assert_eq!(harness.game.moves(), 2);
+    }
+
+    #[test]
+    fn dragging_a_locked_column_does_nothing() {
+        let game = PipesGame::random(6, 5, 0.6, 11);
+        let col = (0..game.columns())
+            .find(|col| game.is_locked(*col))
+            .expect("a 60% locked board has locked columns");
+        let before = game.offset(col);
+        let mut harness = Harness::new(game, col);
+
+        harness.press();
+        harness.drag_by(TEST_CELL);
+        harness.release();
+        assert_eq!(harness.game.offset(col), before);
+        assert_eq!(harness.game.moves(), 0);
+        assert!(!harness.dragged);
+    }
+
+    /// A press and release without travel keeps the pre-existing behavior:
+    /// one scroll down, and no drag reported.
+    #[test]
+    fn click_still_scrolls_one_row_down() {
+        let game = PipesGame::random(6, 5, 0.0, 11);
+        let rows = game.rows();
+        let before = game.offset(0);
+        let mut harness = Harness::new(game, 0);
+
+        harness.press();
+        harness.release();
+        assert_eq!(harness.game.offset(0), (before + 1) % rows);
+        assert_eq!(harness.game.moves(), 1);
+        assert!(!harness.dragged);
     }
 }
