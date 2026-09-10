@@ -7,6 +7,8 @@ Versioning](semver).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-10
+
 ### Added
 
 - Drag-and-drop column scrolling: press an unlocked column and drag up or down; the column follows the pointer and commits one scroll per cell of travel, and any leftover fraction snaps home on release. Clicking and mouse-wheel scrolling behave exactly as before, and locked columns ignore drags. `PipesWidget::dragged` reports a drag-committed scroll to the embedding app, mirroring `PipesWidget::scrolled`
@@ -36,6 +38,7 @@ Versioning](semver).
 
 [keep_a_changelog]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
-[Unreleased]: https://github.com/cecton/egui-pipes/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/cecton/egui-pipes/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/cecton/egui-pipes/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cecton/egui-pipes/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cecton/egui-pipes/releases/tag/v0.1.0
