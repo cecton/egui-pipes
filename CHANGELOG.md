@@ -7,6 +7,13 @@ Versioning](semver).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-12
+
+### Changed
+
+- `PipesGame::random` never locks the first or last column: the water enters and leaves the board there, so freezing either edge column reads as a dead board. The locked count itself is unchanged
+- Solution segments are capped at half the column's height, rounded down, in every column (locked ones included), so a required path can no longer span most of a column as one long run. On boards of 3 rows or fewer, unlocked columns fall back to any exit where the cap would leave them no legal displacement; the uniqueness check still filters those boards
+
 ## [0.1.2] - 2026-09-10
 
 ### Added
@@ -38,7 +45,8 @@ Versioning](semver).
 
 [keep_a_changelog]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
-[Unreleased]: https://github.com/cecton/egui-pipes/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/cecton/egui-pipes/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/cecton/egui-pipes/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/cecton/egui-pipes/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cecton/egui-pipes/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cecton/egui-pipes/releases/tag/v0.1.0

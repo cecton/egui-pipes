@@ -11,6 +11,8 @@
 //! 3. Store that solved layout as the column's stored order, i.e. the
 //!    solution is "every column at offset 0".
 //! 4. Lock a share of the columns, scroll the rest to random offsets.
+//!    The first and last columns are never locked: the water enters and
+//!    leaves the board there, so freezing either reads as a dead edge.
 //! 5. Verify with [`crate::PipesGame::solution_count`] that exactly one
 //!    combination of scrolls solves the board; retry if not.
 //!
@@ -33,6 +35,16 @@
 //!
 //! Locked columns get no such constraint: their scroll never changes, so
 //! duplicate displacements there cost nothing and keep the board varied.
+//!
+//! # The half-height constraint
+//!
+//! Every column's solution segment (locked columns included) is capped at
+//! half the column's height, rounded down: a required path spanning most
+//! of a column reads as one long, uninteresting run. For columns of 3
+//! rows or fewer the cap leaves no displacement other than `delta == 0`,
+//! which unlocked columns cannot take (see above), so unlocked columns
+//! there fall back to any exit; the uniqueness check in step 5 still
+//! rejects boards that would be ambiguous.
 //!
 //! The constraint only makes each column *individually* unambiguous. It does
 //! not by itself rule out a globally different route (a wrong scroll in one
@@ -109,7 +121,10 @@ fn build_candidate(
     locked_count: usize,
 ) -> Candidate {
     let mut locked = vec![false; columns];
-    let mut order: Vec<usize> = (0..columns).collect();
+    // The first and last columns are never lock candidates: the water
+    // enters and leaves the board there, and a frozen edge column reads
+    // as a dead board.
+    let mut order: Vec<usize> = (1..columns - 1).collect();
     rng.shuffle(&mut order);
     for &col in order.iter().take(locked_count) {
         locked[col] = true;
@@ -132,18 +147,34 @@ fn build_candidate(
     }
 }
 
-/// The row the solution leaves a column by. Unlocked columns never go
-/// straight across: a `delta == 0` solution segment would forbid every
-/// length-1 filler in that column (see the module docs).
+/// The row the solution leaves a column by. Two constraints:
+///
+/// - The segment spans at most half the column's height, rounded down
+///   (`len = |exit - entry| + 1 <= rows / 2`), so no required path reads
+///   as one long run down the column.
+/// - Unlocked columns never go straight across: a `delta == 0` solution
+///   segment would forbid every length-1 filler in that column (see the
+///   module docs).
+///
+/// With 3 rows or fewer the cap leaves unlocked columns no displacement
+/// but `delta == 0`, so they fall back to any exit there; the whole-board
+/// uniqueness check still rejects ambiguous boards.
 fn pick_exit(rng: &mut fastrand::Rng, rows: usize, entry: usize, is_locked: bool) -> usize {
-    if is_locked {
-        return rng.usize(0..rows);
+    let max_len = (rows / 2).max(1);
+    let max_delta = max_len - 1;
+
+    let candidates: Vec<usize> = (0..rows)
+        .filter(|&exit| {
+            let delta = exit.abs_diff(entry);
+            delta <= max_delta && (is_locked || delta != 0 || max_delta == 0)
+        })
+        .collect();
+
+    match candidates.as_slice() {
+        [] => rng.usize(0..rows),
+        [only] => *only,
+        _ => candidates[rng.usize(0..candidates.len())],
     }
-    let mut exit = rng.usize(0..rows - 1);
-    if exit >= entry {
-        exit += 1;
-    }
-    exit
 }
 
 /// One column, at its solved scroll: the solution segment between `entry`
@@ -163,8 +194,12 @@ fn build_column(
     write_segment(&mut out, top, len, down);
 
     // Whatever the solution segment doesn't use is one contiguous arc of
-    // the ring, starting just past its bottom end.
-    let forbidden = (!is_locked).then(|| segment_delta(len, down));
+    // the ring, starting just past its bottom end. The displacement ban
+    // only applies when the solution segment is itself displacing: a
+    // `delta == 0` solution (possible on unlocked columns via the
+    // tiny-board fallback) leaves every filler shape equally guilty, and
+    // the uniqueness check decides whether the board stands.
+    let forbidden = (!is_locked && segment_delta(len, down) != 0).then(|| segment_delta(len, down));
     let mut cursor = (top + len) % rows;
     let mut remaining = rows - len;
     while remaining > 0 {
@@ -270,6 +305,70 @@ mod tests {
                 let game = PipesGame::random(columns, rows, ratio, seed);
                 for col in 0..game.columns() {
                     assert_well_formed_ring(game.base_column(col));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_first_and_last_columns_are_never_locked() {
+        for (columns, rows, ratio) in presets() {
+            for seed in 0..40 {
+                let game = PipesGame::random(columns, rows, ratio, seed);
+                assert!(!game.is_locked(0), "{columns}x{rows} seed {seed}");
+                assert!(!game.is_locked(columns - 1), "{columns}x{rows} seed {seed}");
+            }
+        }
+    }
+
+    /// Walks the solved layout column by column, following the water from
+    /// the inlet, and returns each column's `(entry_row, exit_row)`.
+    fn solution_path(game: &PipesGame) -> Vec<(usize, usize)> {
+        let rows = game.rows();
+        let mut path = Vec::with_capacity(game.columns());
+        let mut row = game.start_row();
+        for col in 0..game.columns() {
+            let column = game.base_column(col);
+            let entry = row;
+            let mut side = Side::Left;
+            let mut cur = entry;
+            loop {
+                let next = column[cur].exit(side).expect("solution path is connected");
+                match next {
+                    Side::Right => break,
+                    Side::Down => {
+                        cur = (cur + 1) % rows;
+                        side = Side::Up;
+                    }
+                    Side::Up => {
+                        cur = (cur + rows - 1) % rows;
+                        side = Side::Down;
+                    }
+                    Side::Left => unreachable!("flow never re-enters leftward"),
+                }
+            }
+            path.push((entry, cur));
+            row = cur;
+        }
+        assert_eq!(row, game.end_row(), "path must end at the outlet");
+        path
+    }
+
+    #[test]
+    fn solution_segments_never_exceed_half_the_column_height() {
+        // The presets plus a taller board; rows of 4+ always give the cap
+        // room to bite (below that the tiny-board fallback may exceed it).
+        for (columns, rows, ratio) in [(6, 5, 0.4), (7, 6, 0.4), (9, 7, 0.4), (5, 9, 0.3)] {
+            for seed in 0..60 {
+                let game = PipesGame::random(columns, rows, ratio, seed);
+                let max_len = rows / 2;
+                for (col, &(entry, exit)) in solution_path(&game).iter().enumerate() {
+                    let len = entry.abs_diff(exit) + 1;
+                    assert!(
+                        len <= max_len,
+                        "{columns}x{rows} seed {seed}: column {col} \
+                         solution spans {entry} -> {exit} ({len} > {max_len})"
+                    );
                 }
             }
         }
