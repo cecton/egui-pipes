@@ -7,7 +7,11 @@
 //!    segment per column: its displacement is `exit - entry`, and its
 //!    position is wherever those two rows are.
 //! 2. Fill the rest of each column's cyclic ring with random segments, so
-//!    every cell holds a piece and no corner dangles.
+//!    every cell holds a piece and no corner dangles. Fillers follow the
+//!    same half-height cap as the solution segment (see below), and in a
+//!    locked column they never straddle the top/bottom edge: the scroll is
+//!    frozen at offset 0, so every incorrect path in it must read as a
+//!    complete path with a beginning and an end without any rotation.
 //! 3. Store that solved layout as the column's stored order, i.e. the
 //!    solution is "every column at offset 0".
 //! 4. Lock a share of the columns, scroll the rest to random offsets.
@@ -38,13 +42,13 @@
 //!
 //! # The half-height constraint
 //!
-//! Every column's solution segment (locked columns included) is capped at
-//! half the column's height, rounded down: a required path spanning most
-//! of a column reads as one long, uninteresting run. For columns of 3
-//! rows or fewer the cap leaves no displacement other than `delta == 0`,
-//! which unlocked columns cannot take (see above), so unlocked columns
-//! there fall back to any exit; the uniqueness check in step 5 still
-//! rejects boards that would be ambiguous.
+//! Every segment in every column (locked columns included, fillers
+//! included) is capped at half the column's height, rounded down: a path
+//! spanning most of a column reads as one long, uninteresting run. For
+//! columns of 3 rows or fewer the cap leaves no displacement other than
+//! `delta == 0`, which unlocked columns cannot take (see above), so
+//! unlocked columns there fall back to any exit; the uniqueness check in
+//! step 5 still rejects boards that would be ambiguous.
 //!
 //! The constraint only makes each column *individually* unambiguous. It does
 //! not by itself rule out a globally different route (a wrong scroll in one
@@ -179,6 +183,14 @@ fn pick_exit(rng: &mut fastrand::Rng, rows: usize, entry: usize, is_locked: bool
 
 /// One column, at its solved scroll: the solution segment between `entry`
 /// and `exit`, and random segments filling the rest of the ring.
+///
+/// Fillers never exceed half the column's height, just like the solution
+/// segment. In a locked column they additionally never straddle the
+/// top/bottom edge: the column's scroll is frozen at offset 0, so a
+/// wrapped filler would sit there forever as two dangling corners pointing
+/// off the board instead of reading as a path with a beginning and an end.
+/// Unlocked columns keep the cyclic tiling; there the wrap is just
+/// something the player rotates into view.
 fn build_column(
     rng: &mut fastrand::Rng,
     rows: usize,
@@ -189,24 +201,43 @@ fn build_column(
     let top = entry.min(exit);
     let len = entry.abs_diff(exit) + 1;
     let down = exit >= entry;
+    let max_len = (rows / 2).max(1);
 
     let mut out = vec![Piece::Horizontal; rows];
     write_segment(&mut out, top, len, down);
 
-    // Whatever the solution segment doesn't use is one contiguous arc of
-    // the ring, starting just past its bottom end. The displacement ban
-    // only applies when the solution segment is itself displacing: a
-    // `delta == 0` solution (possible on unlocked columns via the
-    // tiny-board fallback) leaves every filler shape equally guilty, and
-    // the uniqueness check decides whether the board stands.
+    // The displacement ban only applies when the solution segment is
+    // itself displacing: a `delta == 0` solution (possible on unlocked
+    // columns via the tiny-board fallback) leaves every filler shape
+    // equally guilty, and the uniqueness check decides whether the board
+    // stands.
     let forbidden = (!is_locked && segment_delta(len, down) != 0).then(|| segment_delta(len, down));
-    let mut cursor = (top + len) % rows;
-    let mut remaining = rows - len;
-    while remaining > 0 {
-        let (filler_len, filler_down) = pick_filler(rng, remaining, forbidden);
-        write_segment(&mut out, cursor, filler_len, filler_down);
-        cursor = (cursor + filler_len) % rows;
-        remaining -= filler_len;
+
+    if is_locked {
+        // The solution segment splits the column into two visible runs,
+        // below and above itself; tile each one without crossing its
+        // edges.
+        for (run_top, run_len) in [((top + len) % rows, rows - top - len), (0, top)] {
+            let mut cursor = run_top;
+            let mut remaining = run_len;
+            while remaining > 0 {
+                let (filler_len, filler_down) = pick_filler(rng, remaining, max_len, forbidden);
+                write_segment(&mut out, cursor, filler_len, filler_down);
+                cursor += filler_len;
+                remaining -= filler_len;
+            }
+        }
+    } else {
+        // Whatever the solution segment doesn't use is one contiguous arc
+        // of the ring, starting just past its bottom end.
+        let mut cursor = (top + len) % rows;
+        let mut remaining = rows - len;
+        while remaining > 0 {
+            let (filler_len, filler_down) = pick_filler(rng, remaining, max_len, forbidden);
+            write_segment(&mut out, cursor, filler_len, filler_down);
+            cursor = (cursor + filler_len) % rows;
+            remaining -= filler_len;
+        }
     }
 
     out
@@ -214,14 +245,16 @@ fn build_column(
 
 /// A filler segment's shape, weighted toward short runs so a column reads as
 /// a varied stack rather than one long vertical, and never taking the
-/// displacement the solution segment already owns.
+/// displacement the solution segment already owns. `max_len` caps the
+/// segment's length at half the column's height, like the solution segment.
 fn pick_filler(
     rng: &mut fastrand::Rng,
     remaining: usize,
+    max_len: usize,
     forbidden: Option<isize>,
 ) -> (usize, bool) {
     let mut options: Vec<(usize, bool)> = Vec::new();
-    for len in 1..=remaining {
+    for len in 1..=remaining.min(max_len) {
         for down in [true, false] {
             // A one-cell segment is a lone horizontal; it has no two variants.
             if len == 1 && !down {
@@ -369,6 +402,96 @@ mod tests {
                         "{columns}x{rows} seed {seed}: column {col} \
                          solution spans {entry} -> {exit} ({len} > {max_len})"
                     );
+                }
+            }
+        }
+    }
+
+    /// Recovers every segment in a column at its solved scroll (offset 0):
+    /// scanning top to bottom, each cell with a left opening starts one
+    /// segment, whose flow is followed (up or down) to its right opening.
+    /// Returns `(len, wraps)` pairs; `wraps` is whether the segment
+    /// straddles the top/bottom edge (occupies both rows 0 and rows - 1).
+    fn all_segments(column: &[Piece]) -> Vec<(usize, bool)> {
+        let rows = column.len();
+        let mut segments = Vec::new();
+        let mut consumed = vec![false; rows];
+        for start in 0..rows {
+            if consumed[start] || !column[start].has(Side::Left) {
+                continue;
+            }
+            let mut len = 0;
+            let mut saw_top = false;
+            let mut saw_bottom = false;
+            let mut closed = false;
+            let mut cur = start;
+            let mut entry = Side::Left;
+            for _ in 0..rows {
+                consumed[cur] = true;
+                len += 1;
+                saw_top |= cur == 0;
+                saw_bottom |= cur == rows - 1;
+                let exit = column[cur]
+                    .exit(entry)
+                    .expect("a left opening always flows somewhere");
+                match exit {
+                    Side::Right => {
+                        closed = true;
+                        break;
+                    }
+                    Side::Down => {
+                        cur = (cur + 1) % rows;
+                        entry = Side::Up;
+                    }
+                    Side::Up => {
+                        cur = (cur + rows - 1) % rows;
+                        entry = Side::Down;
+                    }
+                    Side::Left => unreachable!("flow never re-enters leftward"),
+                }
+            }
+            assert!(closed, "every segment closes within one lap of the ring");
+            let wraps = saw_top && saw_bottom;
+            segments.push((len, wraps));
+        }
+        segments
+    }
+
+    #[test]
+    fn every_segment_stays_within_half_the_column_height() {
+        for (columns, rows, ratio) in [(6, 5, 0.4), (7, 6, 0.4), (9, 7, 0.4), (5, 9, 0.3)] {
+            for seed in 0..60 {
+                let game = PipesGame::random(columns, rows, ratio, seed);
+                let max_len = rows / 2;
+                for col in 0..game.columns() {
+                    for &(len, _) in &all_segments(game.base_column(col)) {
+                        assert!(
+                            len <= max_len,
+                            "{columns}x{rows} seed {seed}: column {col} \
+                             has a segment of {len} > {max_len}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn locked_columns_never_wrap_a_segment_over_the_edge() {
+        for (columns, rows, ratio) in presets() {
+            for seed in 0..60 {
+                let game = PipesGame::random(columns, rows, ratio, seed);
+                for col in 0..game.columns() {
+                    if !game.is_locked(col) {
+                        continue;
+                    }
+                    for &(len, wraps) in &all_segments(game.base_column(col)) {
+                        assert!(
+                            !wraps,
+                            "{columns}x{rows} seed {seed}: locked column {col} \
+                             wraps a {len}-cell segment over the edge"
+                        );
+                    }
                 }
             }
         }

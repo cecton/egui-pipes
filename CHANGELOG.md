@@ -7,6 +7,13 @@ Versioning](semver).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-09-12
+
+### Changed
+
+- Filler segments now follow the same half-height cap as solution segments, in every column (locked ones included), so no incorrect path reads as one long run either
+- In locked columns, filler segments never straddle the top/bottom edge: the scroll is frozen at offset 0, so every incorrect path in a locked column reads as a complete path with a beginning and an end, without requiring the rotation the player cannot perform
+
 ## [0.1.3] - 2026-09-12
 
 ### Changed
@@ -45,7 +52,8 @@ Versioning](semver).
 
 [keep_a_changelog]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
-[Unreleased]: https://github.com/cecton/egui-pipes/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/cecton/egui-pipes/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/cecton/egui-pipes/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/cecton/egui-pipes/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/cecton/egui-pipes/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cecton/egui-pipes/compare/v0.1.0...v0.1.1
