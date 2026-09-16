@@ -7,6 +7,13 @@ Versioning](semver).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-16
+
+### Fixed
+
+- Dragging a locked column no longer picks up a fractional shift that wobbles and snaps back: the drag never starts on a locked column at all, instead of starting and then having every rotate attempt fail
+- Releasing a drag now rounds to the nearest row instead of always reverting: past the halfway point of a row, release commits it rather than snapping all the way back to the row the drag started on
+
 ## [0.1.4] - 2026-09-12
 
 ### Changed
