@@ -70,9 +70,10 @@ pub fn fit_cell_size(game: &PipesGame, available: Vec2) -> f32 {
 ///
 /// Click an unlocked column to scroll it down one row (the bottom piece
 /// wraps around to the top); drag a column up or down and it follows the
-/// pointer, committing one scroll per cell of travel; the mouse wheel over
-/// a column scrolls it either way. Individual pieces never rotate. Locked
-/// columns are drawn darker and ignore all of these.
+/// pointer, committing one scroll per cell of travel, plus one more on
+/// release if the pointer is past the halfway point of the next row; the
+/// mouse wheel over a column scrolls it either way. Individual pieces never
+/// rotate. Locked columns are drawn darker and ignore all of these.
 ///
 /// ```ignore
 /// ui.add(egui_pipes::PipesWidget::new(&mut game));
@@ -435,10 +436,14 @@ impl Widget for PipesWidget<'_> {
             if response.drag_started() {
                 // The drag locks to the column it started on: horizontal
                 // pointer travel is ignored, and the gesture keeps working
-                // even if the pointer leaves the board.
+                // even if the pointer leaves the board. A locked column
+                // never starts a drag at all, so its pipes can't pick up a
+                // fractional shift from pointer travel that would otherwise
+                // wobble and snap back once the rotate keeps failing.
                 drag = response
                     .interact_pointer_pos()
                     .and_then(col_at)
+                    .filter(|col| !game.is_locked(*col))
                     .map(|col| (col, 0.0));
             }
 
@@ -468,8 +473,27 @@ impl Widget for PipesWidget<'_> {
                     }
                 }
                 if response.drag_stopped() {
-                    // Hand the leftover fraction to the slide animation,
-                    // which decays it to zero: the column snaps home.
+                    // A release past the halfway point of a row commits
+                    // that row instead of reverting: the pipes already
+                    // visually read as most of the way there, so snapping
+                    // all the way back on release would land the column
+                    // one row short of where the drag looked like it was
+                    // going. Whatever fraction remains after that (always
+                    // under half a row either way) is handed to the slide
+                    // animation, which decays it to zero.
+                    if residual.abs() >= 0.5 {
+                        let (direction, step) = if *residual > 0.0 {
+                            (Rotation::Down, -1.0)
+                        } else {
+                            (Rotation::Up, 1.0)
+                        };
+                        if game.rotate(*col, direction) {
+                            *residual += step;
+                            if let Some(flag) = dragged {
+                                *flag = true;
+                            }
+                        }
+                    }
                     slide[*col] += *residual;
                     drag = None;
                 }
@@ -1004,16 +1028,16 @@ mod tests {
         assert!(harness.dragged);
     }
 
-    /// Travel below one cell moves nothing, and the leftover fraction is
-    /// dropped on release rather than committed later.
+    /// Travel short of the halfway point moves nothing while held, and
+    /// releasing there drops the leftover fraction instead of committing it.
     #[test]
-    fn half_cell_drag_commits_nothing() {
+    fn short_drag_commits_nothing() {
         let game = PipesGame::random(6, 5, 0.0, 11);
         let before = game.offset(0);
         let mut harness = Harness::new(game, 0);
 
         harness.press();
-        harness.drag_by(TEST_CELL * 0.5);
+        harness.drag_by(TEST_CELL * 0.4);
         assert_eq!(harness.game.offset(0), before);
         assert_eq!(harness.game.moves(), 0);
 
@@ -1021,6 +1045,28 @@ mod tests {
         assert_eq!(harness.game.offset(0), before);
         assert_eq!(harness.game.moves(), 0);
         assert!(!harness.dragged);
+    }
+
+    /// Releasing past the halfway point of a row commits that row: the
+    /// pipes already visually read as most of the way there, so a release
+    /// rounds to the nearest row rather than always reverting to the one
+    /// the drag started on.
+    #[test]
+    fn past_halfway_drag_rounds_up_on_release() {
+        let game = PipesGame::random(6, 5, 0.0, 11);
+        let rows = game.rows();
+        let before = game.offset(0);
+        let mut harness = Harness::new(game, 0);
+
+        harness.press();
+        harness.drag_by(TEST_CELL * 0.7);
+        assert_eq!(harness.game.offset(0), before);
+        assert_eq!(harness.game.moves(), 0);
+
+        harness.release();
+        assert_eq!(harness.game.offset(0), (before + 1) % rows);
+        assert_eq!(harness.game.moves(), 1);
+        assert!(harness.dragged);
     }
 
     /// Partial travel accumulates across frames while the drag is live, so
