@@ -7,6 +7,14 @@ Versioning](semver).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-19
+
+### Changed
+
+- Updated egui to 0.36.
+- The test harness now clears egui's `textures_delta` after each pass, as egui
+  0.36 panics when unapplied texture deltas are dropped.
+
 ## [0.1.5] - 2026-09-16
 
 ### Fixed

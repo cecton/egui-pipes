@@ -1,8 +1,8 @@
 [package]
 name = "egui-pipes"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.95"
 description = "A pipe-connecting puzzle game library for egui"
 license = "MIT OR Apache-2.0"
 authors = ["Cecile Tonglet <cecile.tonglet@cecton.com>"]
@@ -17,7 +17,7 @@ exclude = ["/examples", "/.github"]
 name = "egui_pipes"
 
 [dependencies]
-egui = { version = "0.35", default-features = false }
+egui = { version = "0.36", default-features = false }
 fastrand = "2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -26,11 +26,11 @@ fastrand = { version = "2", features = ["js"] }
 [dev-dependencies]
 # Fonts only matter to the tests, which run a real `egui` pass over the
 # widget; the library itself never needs them.
-egui = { version = "0.35", features = ["default_fonts"] }
+egui = { version = "0.36", features = ["default_fonts"] }
 xtask-wasm = { version = "0.6.5", features = ["run-example", "wasm-opt"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-eframe = { version = "0.35", default-features = false, features = [
+eframe = { version = "0.36", default-features = false, features = [
     "default_fonts",
     "glow",
     "persistence",

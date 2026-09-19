@@ -891,10 +891,13 @@ mod tests {
             };
             let game = &mut self.game;
             let dragged = &mut self.dragged;
-            let _ = self.ctx.run_ui(input, |ui| {
+            let mut output = self.ctx.run_ui(input, |ui| {
                 let response = ui.add(PipesWidget::new(game).cell_size(TEST_CELL).dragged(dragged));
                 widget_rect.set(response.rect);
             });
+            // egui 0.36 panics if texture deltas are dropped unapplied; the
+            // tests never render, so discard them.
+            output.textures_delta.clear();
             widget_rect.get()
         }
 
